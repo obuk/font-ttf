@@ -231,6 +231,7 @@ $VERSION = 0.39;    # MJPH       2-FEB-2008     Add DSIG table
         'prop' => 'Font::TTF::Prop',
         'vhea' => 'Font::TTF::Vhea',
         'vmtx' => 'Font::TTF::Vmtx',
+        'CFF ' => 'Font::TTF::CFF_',
           );
 
 # This is special code because I am fed up of every time I x a table in the debugger
