@@ -109,5 +109,18 @@ my %makeinfo = (
         @extras
     );
 
+$makeinfo{PREREQ_PM} = {
+    %{$makeinfo{PREREQ_PM}},
+    # CFF_.pm
+    'Carp' => 0,
+    'Class::Tiny' => 0,
+    'Clone' => 0,
+    'Data::Dumper' => 0,
+    'File::Temp' => 0,
+    'List::Util' => 0,
+    'POSIX' => 0,
+    'Scalar::Util' => 0,
+};
+
 WriteMakefile(%makeinfo);
 
