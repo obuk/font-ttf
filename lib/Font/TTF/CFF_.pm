@@ -156,10 +156,7 @@ sub subset {
     $cff->Name_INDEX(clone $self->Name_INDEX);
     bless $cff->Name_INDEX, "Font::TTF::CFF_::INDEX";
     $cff->TopDICT(clone $self->TopDICT);
-
-    # XXXXX If CharstringType = 1 is set that FontForge warns that "Subroutine
-    # number exceeds bounds".
-    # $cff->TopDICT->{CharstringType} = 1;
+    #$cff->TopDICT->{CharstringType} = 1;
 
     # strings_index can be reduced by subsetting, but the effect is small.
     # For now, copying should be sufficient.
@@ -2312,7 +2309,7 @@ sub get_FDSelect {
         }
         $FDSelect->{gid2fdindex} = \@gid2fdindex;
     } else {
-        carp "FDSelect: unknown format #$format";
+        confess "FDSelect: unknown format #$format";
         $format = undef;
     }
     $FDSelect;
@@ -3385,7 +3382,7 @@ sub offSize {
     my $self = shift;
     return $self->{offSize} if defined $self->{offSize};
     $self->commit;
-    $self->{offSize} = max(1, ceil(log($self->offset->[-1]) / log(256)));
+    $self->{offSize} = max(1, ceil(log($self->offset->[-1] + 1) / log(256)));
 }
 
 
