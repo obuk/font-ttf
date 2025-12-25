@@ -115,12 +115,12 @@ use constant {
 };
 
 
-use Class::Tiny qw(verbose debug gid_as_cid notdef_glyph);
+use Class::Tiny qw(verbose debug gid_as_cid notdef_glyph padding maxpadding);
 
 sub new {
     my $proto = shift;
     my $class = ref($proto) || $proto;
-    $class->SUPER::new(gid_as_cid => 1, notdef_glyph => 0, @_);
+    $class->SUPER::new(gid_as_cid => 1, notdef_glyph => 0, padding => 8, @_);
 }
 
 
@@ -145,7 +145,7 @@ sub subset {
     my $tmp = tempfile(CLEANUP => 1, SUFFIX => '.cff');
     #my $cff = Font::TTF::CFF_->new(INFILE => $tmp, OFFSET => 0);
     my $cff = $self->new(INFILE => $tmp, OFFSET => 0);
-    $cff->$_($self->$_) for qw/debug verbose/;
+    $cff->$_($self->$_) for qw/debug verbose padding maxpadding/;
 
     $self->gid(sort { $a <=> $b } grep $_ > 0, $self->gid(@_)) if @_;
     $self->gid(1 .. $self->nGlyphs - 1) unless $self->gid;
@@ -160,8 +160,13 @@ sub subset {
 
     # strings_index can be reduced by subsetting, but the effect is small.
     # For now, copying should be sufficient.
-    $cff->String_INDEX(clone $self->String_INDEX);
-    #bless $cff->String_INDEX, "Font::TTF::CFF_::INDEX";
+
+    # $cff->String_INDEX(clone $self->String_INDEX);
+    # bless $cff->String_INDEX, "Font::TTF::CFF_::INDEX";
+    # $cff->padding(8) unless $cff->padding;
+    $cff->String_INDEX(Font::TTF::CFF_::INDEX->new);
+    $cff->padding(8 + $self->String_INDEX->offset->[-1]) unless $cff->padding;
+    $cff->maxpadding(16) unless $cff->maxpadding;
 
     # Prevents FDArray() from calling get_FDArray().
     $cff->FDArray([]);
@@ -306,6 +311,7 @@ sub subset {
     bless $cff->TopDICT_INDEX, "Font::TTF::CFF_::INDEX";
     delete $cff->TopDICT_INDEX->{offSize};
     $tmp->print($cff->pack_INDEX($cff->TopDICT_INDEX));
+    $cff->String_INDEX->commit;
     $tmp->print($cff->pack_INDEX($cff->String_INDEX));
     $tmp->print($cff->pack_INDEX($cff->GlobalSubr_INDEX));
 
@@ -313,7 +319,7 @@ sub subset {
     # fixed positions at the beginning of the font are updated,
     # subsequent data is less likely to be overwritten.
     $p1end = $tmp->tell;
-    $tmp->print(chr(0) x 8);
+    $tmp->print(chr(0) x $cff->padding) if $cff->padding;
     my $p2start = $tmp->tell;
 
   p2:
@@ -382,11 +388,21 @@ sub subset {
     $cff->TopDICT_INDEX($topdict_index2);
     $tmp->seek($topdict_pos, 0);
     $tmp->print($cff->pack_INDEX($cff->TopDICT_INDEX));
+    $cff->String_INDEX->commit;
     $tmp->print($cff->pack_INDEX($cff->String_INDEX));
     $tmp->print($cff->pack_INDEX($cff->GlobalSubr_INDEX));
     my $p1end_updated = $tmp->tell;
-    unless ($p1end_updated <= $p2start) {
-	die "p1 overlaps p2. (p1end $p1end_updated (from $p1end) <= $p2start)";
+    if ($p1end_updated > $p2start) {
+	warn $cff->Name_INDEX->data(0), ": p1 overlaps p2. ",
+	    "(p1 $p1end_updated, p2 $p2start)\n";
+	$cff->padding(8);
+	goto p1;
+    }
+    if ($p2start - $p1end_updated > $cff->maxpadding) {
+	warn $cff->Name_INDEX->data(0), ": gap between p1 and p2: ",
+	    $p2start - $p1end_updated, "\n" if $self->verbose;
+	$cff->padding(8);
+	goto p1;
     }
     $tmp->truncate($p2end);
     $cff->{' LENGTH'} = $p2end;
@@ -569,72 +585,72 @@ sub disasm {
             # 0 - 11: operators
 	    if ($c == 1) {
 		# |- y dy {dya dyb}* hstem (1) |-
-		$self->disasm_print("hstem ($c)");
+		$self->disasm_print("hstem");
 		&$hstem unless @{$self->{hs}};
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 3) {
 		# |- x dx {dxa dxb}* vstem (3) |-
-		$self->disasm_print("vstem ($c)");
+		$self->disasm_print("vstem");
 		&$vstem unless @{$self->{vs}};
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 4) {
 		# |- dy1 vmoveto (4) |-
-		$self->disasm_print("vmoveto ($c)");
-		my @args = pop @{$self->{v}};
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("vmoveto");
+		#my @args = pop @{$self->{v}};
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 5) {
 		# |- {dxa dya}+ rlineto (5) |-
-		$self->disasm_print("rlineto ($c)");
-		my ($q, $r) = idiv(scalar @{$self->{v}}, 2);
-		my @args = splice @{$self->{v}}, -($q * 2);
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("rlineto");
+		#my ($q, $r) = idiv(scalar @{$self->{v}}, 2);
+		#my @args = splice @{$self->{v}}, -($q * 2);
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 6) {
 		# |- dx1 {dya dxb}* hlineto (6) |-
 		# |- {dxa dyb}+ hlineto (6) |-
-		$self->disasm_print("hlineto ($c)");
-		my ($q, $r) = idiv(scalar @{$self->{v}}, 2);
-		my @args = splice @{$self->{v}}, -($q * 2 + $r);
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("hlineto");
+		#my ($q, $r) = idiv(scalar @{$self->{v}}, 2);
+		#my @args = splice @{$self->{v}}, -($q * 2 + $r);
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 7) {
 		# |- dy1 {dxa dyb}* vlineto (7) |-
 		# |- {dya dxb}+ vlineto (7) |-
-		$self->disasm_print("vlineto ($c)");
-		my ($q, $r) = idiv(scalar @{$self->{v}}, 2);
-		my @args = splice @{$self->{v}}, -($q * 2 + $r);
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("vlineto");
+		#my ($q, $r) = idiv(scalar @{$self->{v}}, 2);
+		#my @args = splice @{$self->{v}}, -($q * 2 + $r);
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 8) {
 		# |- {dxa dya dxb dyb dxc dyc}+ rrcurveto (8) |-
-		$self->disasm_print("rrcurveto ($c)");
-		my ($q, $r) = idiv(scalar @{$self->{v}}, 6);
-		my @args = splice @{$self->{v}}, -($q * 6);
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("rrcurveto");
+		#my ($q, $r) = idiv(scalar @{$self->{v}}, 6);
+		#my @args = splice @{$self->{v}}, -($q * 6);
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 10) {
 		# subr# callsubr (10) –
-		$self->disasm_print("callsubr ($c)");
+		$self->disasm_print("callsubr");
 		my $subr = pop @{$self->{v}};
 		my $class = 'LocalSubr_INDEX';
 		my $cs = $self->$class;
 		my $index = $subr + $cs->bias;
 		if ($cff) {
-		    my $new_cs = $cff->$class;
-		    local $DISASM = [];
 		    if (defined $f->{id} && defined $f->{class}) {
 			$cff->$class->{hintmask}{$index} = $cff->{$f->{class}}->{hintmask}{$f->{id}};
 		    }
+		    my $new_cs = $cff->$class;
+		    local $DISASM = [];
 		    my $code = $cs->data($index);
 		    my $tmp_code = $self->disasm({ %$f, class => $class, id => $index }, $code, $cff);
 		    $new_cs->subr($index, $tmp_code);
@@ -651,7 +667,7 @@ sub disasm {
 	    }
 	    elsif ($c == 11) {
 		# – return (11) –
-		$self->disasm_print("return ($c)");
+		$self->disasm_print("return");
 		$self->disasm_print("\n");
 		#last;
 	    }
@@ -662,33 +678,33 @@ sub disasm {
 =begin comment
 
                 if ($c2 == 0) {
-		    $self->disasm_print("dotsection ($c)");
+		    $self->disasm_print("dotsection");
 		    # |– dotsection (12 0) |–
 
 		    # This is an obsolete form of hint substitution (actually
 		    # hint suspension) that has always been treated as a no-op
 		    # by Adobe ATM renderers.
 
-		    $self->disasm_print("|-") if @{$self->{v}} != 0;
+		    #$self->disasm_print("|-") if @{$self->{v}} != 0;
 		    $self->{v} = []; # clear
 		}
                 elsif ($c2 == 1) {
-		    $self->disasm_print("vstem3 ($c)");
+		    $self->disasm_print("vstem3");
 		    # |- x0 dx0 x1 dx1 x2 dx2 vstem3 (12 1) |- T1_SPEC.pdf
-		    my ($x0, $dx0, $x1, $dx1, $x2, $dx2) = splice @{$self->{v}}, -6;
-		    $self->disasm_print("|-") if @{$self->{v}} != 0;
+		    #my ($x0, $dx0, $x1, $dx1, $x2, $dx2) = splice @{$self->{v}}, -6;
+		    #$self->disasm_print("|-") if @{$self->{v}} != 0;
 		    $self->{v} = []; # clear
 		}
                 elsif ($c2 == 2) {
-		    $self->disasm_print("hstem3 ($c)");
+		    $self->disasm_print("hstem3");
 		    # |- y0 dy0 y1 dy1 y2 dy2 hstem3 (12 2) |- T1_SPEC.pdf
 		    push @{$self->{hs}}, splice @{$self->{v}}, -6;
-		    $self->disasm_print("|-") if @{$self->{v}} != 0;
+		    #$self->disasm_print("|-") if @{$self->{v}} != 0;
 		    $self->{v} = []; # clear
 		}
                 elsif ($c2 == 3) {
 		    # num1 num2 and (12 3) 1_or_0
-		    $self->disasm_print("and ($c $c2)");
+		    $self->disasm_print("and");
 		    my $num2 = pop @{$self->{v}};
 		    my $num1 = pop @{$self->{v}};
 		    my $bool = $num1 && $num2;
@@ -696,7 +712,7 @@ sub disasm {
 		}
                 elsif ($c2 == 4) {
 		    # num1 num2 or (12 4) 1_or_0
-		    $self->disasm_print("or ($c $c2)");
+		    $self->disasm_print("or");
 		    my $num2 = pop @{$self->{v}};
 		    my $num1 = pop @{$self->{v}};
 		    my $bool = $num1 || $num2;
@@ -704,17 +720,17 @@ sub disasm {
 		}
                 elsif ($c2 == 5) {
 		    # num1 not (12 5) 1_or_0
-		    $self->disasm_print("not ($c $c2)");
+		    $self->disasm_print("not");
 		    my $num1 = pop @{$self->{v}};
 		    my $bool = !$num1;
 		    push @{$self->{v}}, $bool;
 		}
                 elsif ($c2 == 6) {
-		    $self->disasm_print("seac ($c)");
+		    $self->disasm_print("seac");
 		    # |- asb adx ady bchar achar seac (12 6) |-
 		}
                 elsif ($c2 == 7) {
-		    $self->disasm_print("sbw ($c)");
+		    $self->disasm_print("sbw");
 		    # |- sbx sby wx wy sbw (12 7) |-
 		}
                 elsif ($c2 == 8) {
@@ -722,14 +738,14 @@ sub disasm {
 		}
                 elsif ($c2 == 9) {
 		    # num abs (12 9) num2
-		    $self->disasm_print("abs ($c $c2)");
+		    $self->disasm_print("abs");
 		    my $num = pop @{$self->{v}};
 		    my $num2 = $num < 0 ? -$num : $num;
 		    push @{$self->{v}}, $num2;
 		}
                 elsif ($c2 == 10) {
 		    # num1 num2 add (12 10) sum
-		    $self->disasm_print("add ($c $c2)");
+		    $self->disasm_print("add");
 		    my $num2 = pop @{$self->{v}};
 		    my $num1 = pop @{$self->{v}};
 		    my $sum = $num1 + $num2;
@@ -737,7 +753,7 @@ sub disasm {
 		}
                 elsif ($c2 == 11) {
 		    # num1 num2 sub (12 11) difference
-		    $self->disasm_print("sub ($c $c2)");
+		    $self->disasm_print("sub");
 		    my $num2 = pop @{$self->{v}};
 		    my $num1 = pop @{$self->{v}};
 		    my $difference = $num1 - $num2;
@@ -745,7 +761,7 @@ sub disasm {
 		}
                 elsif ($c2 == 12) {
 		    # num1 num2 div (12 12) quotient
-		    $self->disasm_print("div ($c $c2)");
+		    $self->disasm_print("div");
 		    my $num2 = pop @{$self->{v}};
 		    my $num1 = pop @{$self->{v}};
 		    my $quotient = $num1 / $num2;
@@ -756,29 +772,29 @@ sub disasm {
 		}
 		elsif ($c2 == 14) {
 		    # num neg (12 14) num2
-		    $self->disasm_print("neg ($c $c2)");
+		    $self->disasm_print("neg");
 		    my $num = pop @{$self->{v}};
 		    my $num2 = -$num;
 		    push @{$self->{v}}, $num2;
 		}
                 elsif ($c2 == 15) {
 		    # num1 num2 eq (12 15) 1_or_0
-		    $self->disasm_print("eq ($c $c2)");
+		    $self->disasm_print("eq");
 		    my $num2 = pop @{$self->{v}};
 		    my $num1 = pop @{$self->{v}};
 		    my $bool = $num1 == $num2;
 		    push @{$self->{v}}, $bool;
 		}
                 elsif ($c2 == 16) {
-		    $self->disasm_print("callothersubr ($c)");
+		    $self->disasm_print("callothersubr");
 		}
                 elsif ($c2 == 17) {
-		    $self->disasm_print("pop ($c)");
+		    $self->disasm_print("pop");
 		    my $x = pop @{$self->{v}};
 		}
                 elsif ($c2 == 18) {
 		    # num drop (12 18)
-		    $self->disasm_print("drop ($c $c2)");
+		    $self->disasm_print("drop");
 		    # removes the top element num from the Type 2 argument
 		    # stack.
 		    my $num = pop @{$self->{v}};
@@ -796,7 +812,7 @@ sub disasm {
 		    # Implementation Limits”.
 		    #     val i put (12 20)
 		    # stores val into the transient array at the location given by i.
-		    $self->disasm_print("put ($c $c2)");
+		    $self->disasm_print("put");
 		    my $i = pop @{$self->{v}};
 		    my $val = pop @{$self->{v}};
 		    $self->{transient_array}->[$i] = $val;
@@ -808,14 +824,14 @@ sub disasm {
 		    # argument stack. If get is executed prior to put for i
 		    # during execution of the current charstring, the value
 		    # returned is undefined.
-		    $self->disasm_print("get ($c $c2)");
+		    $self->disasm_print("get");
 		    my $i = pop @{$self->{v}};
 		    my $val = $self->{transient_array}->[$i];
 		    push @{$self->{v}}, $val;
 		}
                 elsif ($c2 == 22) {
 		    # s1 s2 v1 v2 ifelse (12 22) s1_or_s2
-		    $self->disasm_print("ifelse ($c $c2)");
+		    $self->disasm_print("ifelse");
 		    my $v2 = pop @{$self->{v}};
 		    my $v1 = pop @{$self->{v}};
 		    my $s2 = pop @{$self->{v}};
@@ -828,7 +844,7 @@ sub disasm {
 		}
                 elsif ($c2 == 23) {
 		    # random (12 23) num2
-		    $self->disasm_print("random ($c $c2)");
+		    $self->disasm_print("random");
 		    # a pseudo random number num2 in the range (0,1], that is,
 		    # greater than zero and less than or equal to one.
 		    my $num2 = 1 - rand(1);
@@ -836,7 +852,7 @@ sub disasm {
 		}
                 elsif ($c2 == 24) {
 		    # num1 num2 mul (12 24) product
-		    $self->disasm_print("mul ($c $c2)");
+		    $self->disasm_print("mul");
 		    my $num2 = pop @{$self->{v}};
 		    my $num1 = pop @{$self->{v}};
 		    my $product = $num1 * $num2;
@@ -844,20 +860,20 @@ sub disasm {
 		}
                 elsif ($c2 == 26) {
 		    # num sqrt (12 26) num2
-		    $self->disasm_print("sqrt ($c $c2)");
+		    $self->disasm_print("sqrt");
 		    my $num = pop @{$self->{v}};
 		    my $num2 = sqrt($num);
 		    push @{$self->{v}}, $num2;
 		}
                 elsif ($c2 == 27) {
 		    # any dup (12 27) any any
-		    $self->disasm_print("dup ($c $c2)");
+		    $self->disasm_print("dup");
 		    my $any = pop @{$self->{v}};
 		    push @{$self->{v}}, $any, $any;
 		}
                 elsif ($c2 == 28) {
 		    # num1 num2 exch (12 28) num2 num1
-		    $self->disasm_print("exch ($c $c2)");
+		    $self->disasm_print("exch");
 		    my $num2 = pop @{$self->{v}};
 		    my $num1 = pop @{$self->{v}};
 		    push @{$self->{v}}, $num2, $num1;
@@ -869,7 +885,7 @@ sub disasm {
 		    # and pushes a copy of that element onto that stack.
 		    # If i is negative, the top element is copied.
 		    # If i is greater than X, the operation is undefined.
-		    $self->disasm_print("index ($c $c2)");
+		    $self->disasm_print("index");
 		    my $i = pop @{$self->{v}};
 		    my $num_i = $self->{v}->[-($i + 1)];
 		    push @{$self->{v}}, $num_i;
@@ -884,7 +900,7 @@ sub disasm {
 		    # negative J indicates downward motion.
 		    # The value N must be a non-negative integer,
 		    # otherwise the operation is undefined.
-		    $self->disasm_print("roll ($c $c2)");
+		    $self->disasm_print("roll");
 		    my $J = pop @{$self->{v}};
 		    my $N = pop @{$self->{v}};
 		    if ($J) {
@@ -900,7 +916,7 @@ sub disasm {
 		    }
 		}
                 elsif ($c2 == 33) {
-		    $self->disasm_print("setcurrentpoint ($c $c2)");
+		    $self->disasm_print("setcurrentpoint");
 		}
 		els
 
@@ -910,58 +926,59 @@ sub disasm {
 
                 if ($c2 == 34) {
 		    # |- dx1 dx2 dy2 dx3 dx4 dx5 dx6 hflex (12 34) |-
-		    $self->disasm_print("hflex ($c $c2)");
-		    my @args = splice @{$self->{v}}, 0, -7;
-		    $self->disasm_print("|-") if @{$self->{v}} != 0;
+		    $self->disasm_print("hflex");
+		    #my @args = splice @{$self->{v}}, 0, -7;
+		    #$self->disasm_print("|-") if @{$self->{v}} != 0;
 		    $self->{v} = []; # clear
 		}
                 elsif ($c2 == 35) {
 		    # |- dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 dx6 dy6 fd flex (12 35) |-
-		    $self->disasm_print("flex ($c $c2)");
-		    my @args = splice @{$self->{v}}, 0, -13;
-		    $self->disasm_print("|-") if @{$self->{v}} != 0;
+		    $self->disasm_print("flex");
+		    #my @args = splice @{$self->{v}}, 0, -13;
+		    #$self->disasm_print("|-") if @{$self->{v}} != 0;
 		    $self->{v} = []; # clear
 		}
                 elsif ($c2 == 36) {
 		    # |- dx1 dy1 dx2 dy2 dx3 dx4 dx5 dy5 dx6 hflex1 (12 36) |-
-		    $self->disasm_print("hflex1 ($c $c2)");
-		    my @args = splice @{$self->{v}}, 0, -9;
-		    $self->disasm_print("|-") if @{$self->{v}} != 0;
+		    $self->disasm_print("hflex1");
+		    #my @args = splice @{$self->{v}}, 0, -9;
+		    #$self->disasm_print("|-") if @{$self->{v}} != 0;
 		    $self->{v} = []; # clear
 		}
                 elsif ($c2 == 37) {
 		    # |- dx1 dy1 dx2 dy2 dx3 dy3 dx4 dy4 dx5 dy5 d6 flex1 (12 37) |-
-		    $self->disasm_print("flex1 ($c $c2)");
-		    my @args = splice @{$self->{v}}, 0, -11;
+		    $self->disasm_print("flex1");
+		    #my @args = splice @{$self->{v}}, 0, -11;
+		    #$self->disasm_print("|-") if @{$self->{v}} != 0;
 		    $self->{v} = []; # clear
 		}
                 else {
-		    $self->disasm_print(sprintf("unknown_%02x%02x", $c, $c2),  "($c $c2)");
+		    $self->disasm_print("unknown_$c,$c2");
 		}
             }
             elsif ($c == 14) {
-		$self->disasm_print("endchar ($c)");
+		$self->disasm_print("endchar");
 		# – endchar (14) |–
-		my $advance = $self->PrivateDICT->{defaultWidthX};
-		if (defined $self->{w}) {
-		    $advance = $self->PrivateDICT->{nominalWidthX};
-		    $advance += $self->{w};
-		}
-		$self->disasm_print("#advance $advance\n");
+		#my $advance = $self->PrivateDICT->{defaultWidthX};
+		#if (defined $self->{w}) {
+		#    $advance = $self->PrivateDICT->{nominalWidthX};
+		#    $advance += $self->{w};
+		#}
+		#$self->disasm_print("#advance $advance\n");
 		$self->{v} = []; # clear
 		$self->disasm_print("\n");
 		#last;
 	    }
 	    elsif ($c == 18) {
 		# |- y dy {dya dyb}* hstemhm (18) |-
-		$self->disasm_print("hstemhm ($c)");
+		$self->disasm_print("hstemhm");
 		&$hstem unless @{$self->{hs}};
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
 	    elsif ($c == 19) {
 		# |- hintmask (19 + mask) |-
-		$self->disasm_print("hintmask ($c)");
+		$self->disasm_print("hintmask");
 		&$vstem unless @{$self->{vs}};
 		my $m = do {
 		    my $m;
@@ -976,12 +993,12 @@ sub disasm {
 		};
 		my $bitmask = &$getmask($m);
 		$self->disasm_print($bitmask);
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
 	    elsif ($c == 20) {
 		# |- cntrmask (20 + mask) |-
-		$self->disasm_print("cntrmask ($c)");
+		$self->disasm_print("cntrmask");
 		&$vstem unless @{$self->{vs}};
 		my $m = do {
 		    my $m;
@@ -996,76 +1013,76 @@ sub disasm {
 		};
 		my $bitmask = &$getmask($m);
 		$self->disasm_print($bitmask);
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 21) {
 		# |- dx1 dy1 rmoveto (21) |-
-		$self->disasm_print("rmoveto ($c)");
-		my @args = splice @{$self->{v}}, -2 if @{$self->{v}} >= 2;
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("rmoveto");
+		#my @args = splice @{$self->{v}}, -2 if @{$self->{v}} >= 2;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
 	    elsif ($c == 22) {
 		# |- dx1 hmoveto (22) |-
-		$self->disasm_print("hmoveto ($c)");
-		my @args = pop @{$self->{v}};
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("hmoveto");
+		#my @args = pop @{$self->{v}};
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
 	    elsif ($c == 23) {
 		# |- x dx {dxa dxb}* vstemhm (23) |-
-		$self->disasm_print("vstemhm ($c)");
+		$self->disasm_print("vstemhm");
 		&$vstem unless @{$self->{vs}};
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
 	    elsif ($c == 24) {
 		# |- {dxa dya dxb dyb dxc dyc}+ dxd dyd rcurveline (24) |-
-		$self->disasm_print("rcurveline ($c)");
-		my ($q, $r) = idiv(scalar @{$self->{v}}, 6);
-		my @args = splice @{$self->{v}}, -($q * 6 + $r) if $r == 2;
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("rcurveline");
+		#my ($q, $r) = idiv(scalar @{$self->{v}}, 6);
+		#my @args = splice @{$self->{v}}, -($q * 6 + $r) if $r == 2;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
 	    elsif ($c == 25) {
 		# |- {dxa dya}+ dxb dyb dxc dyc dxd dyd rlinecurve (25) |-
-		$self->disasm_print("rlinecurve ($c)");
-		my ($q, $r) = idiv(scalar @{$self->{v}} - 6, 2);
-		my @args = splice @{$self->{v}}, -($q * 2 + 6)  if @{$self->{v}} >= 8;
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("rlinecurve");
+		#my ($q, $r) = idiv(scalar @{$self->{v}} - 6, 2);
+		#my @args = splice @{$self->{v}}, -($q * 2 + 6)  if @{$self->{v}} >= 8;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 26) {
 		# |- dx1? {dya dxb dyb dyc}+ vvcurveto (26) |-
-		$self->disasm_print("vvcurveto ($c)");
-		my ($q, $r) = idiv(scalar @{$self->{v}}, 4);
-		my @args = splice @{$self->{v}}, -($q * 4 + $r) if $r == 0 || $r == 1;
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("vvcurveto");
+		#my ($q, $r) = idiv(scalar @{$self->{v}}, 4);
+		#my @args = splice @{$self->{v}}, -($q * 4 + $r) if $r == 0 || $r == 1;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 27) {
 		# |- dy1? {dxa dxb dyb dxc}+ hhcurveto (27) |-
-		$self->disasm_print("hhcurveto ($c)");
-		my ($q, $r) = idiv(scalar @{$self->{v}}, 4);
-		my @args = splice @{$self->{v}}, -($q * 4 + $r) if $r == 0 || $r == 1;
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		$self->disasm_print("hhcurveto");
+		#my ($q, $r) = idiv(scalar @{$self->{v}}, 4);
+		#my @args = splice @{$self->{v}}, -($q * 4 + $r) if $r == 0 || $r == 1;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
 	    # 28: following 2 bytes interpreted as a 16-bit two's complement number
             elsif ($c == 29) {
 		# globalsubr# callgsubr (29) –
-		$self->disasm_print("callgsubr ($c)");
+		$self->disasm_print("callgsubr");
 		my $subr = pop @{$self->{v}};
 		my $class = 'GlobalSubr_INDEX';
 		my $cs = $self->$class;
 		my $index = $subr + $cs->bias;
 		if ($cff) {
-		    my $new_cs = $cff->$class;
-		    local $DISASM = [];
 		    if (defined $f->{id} && defined $f->{class}) {
 			$cff->$class->{hintmask}{$index} = $cff->{$f->{class}}->{hintmask}{$f->{id}};
 		    }
+		    my $new_cs = $cff->$class;
+		    local $DISASM = [];
 		    my $code = $cs->data($index);
 		    my $tmp_code = $self->disasm({ %$f, class => $class, id => $index }, $code, $cff);
 		    $new_cs->subr($index, $tmp_code);
@@ -1081,27 +1098,27 @@ sub disasm {
 		}
 	    }
             elsif ($c == 30) {
-		$self->disasm_print("vhcurveto ($c)");
+		$self->disasm_print("vhcurveto");
 		# |- dy1 dx2 dy2 dx3 {dxa dxb dyb dyc dyd dxe dye dxf}* dyf? vhcurveto (30) |-
 		# |- {dya dxb dyb dxc dxd dxe dye dyf}+ dxf? vhcurveto (30) |-
-		my ($q, $r) = idiv(scalar @{$self->{v}}, 8);
-		my @args = splice @{$self->{v}}, -($q * 8 + $r)
-		    if $r == 0 || $r == 1 || $r == 4 || $r == 5;
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		#my ($q, $r) = idiv(scalar @{$self->{v}}, 8);
+		#my @args = splice @{$self->{v}}, -($q * 8 + $r)
+		#    if $r == 0 || $r == 1 || $r == 4 || $r == 5;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             elsif ($c == 31) {
-		$self->disasm_print("hvcurveto ($c)");
+		$self->disasm_print("hvcurveto");
 		# |- dx1 dx2 dy2 dy3 {dya dxb dyb dxc dxd dxe dye dyf}* dxf? hvcurveto (31) |-
 		# |- {dxa dxb dyb dyc dyd dxe dye dxf}+ dyf? hvcurveto (31) |-
-		my ($q, $r) = idiv(scalar @{$self->{v}}, 8);
-		my @args = splice @{$self->{v}}, -($q * 8 + $r)
-		    if $r == 4 || $r == 5 || $r == 0 || $r == 1;
-		$self->disasm_print("|-") if @{$self->{v}} != 0;
+		#my ($q, $r) = idiv(scalar @{$self->{v}}, 8);
+		#my @args = splice @{$self->{v}}, -($q * 8 + $r)
+		#    if $r == 4 || $r == 5 || $r == 0 || $r == 1;
+		#$self->disasm_print("|-") if @{$self->{v}} != 0;
 		$self->{v} = []; # clear
 	    }
             else {
-		$self->disasm_print(sprintf("unknown_%02x", $c),  "($c)");
+		$self->disasm_print("unknown_$c");
 	    }
 	    $self->disasm_print("\n");
         }
@@ -1121,7 +1138,7 @@ sub idiv {
 sub disasm_print {
     my $self = shift;
     our $DISASM;
-
+    return unless $self->debug;
     for (@_) {
 	$DISASM = [] if !defined $DISASM;
 	push @{$DISASM}, [] if !defined $DISASM->[-1] || /\n/;
@@ -1874,7 +1891,7 @@ sub pack_dict_item {
     return undef unless $ent;
     my ($name, $operand, $default, $note) = @{$ent};
     my $v = $dict->{$name};
-    my $_v = $dict->{"_$name"};
+    #my $_v = $dict->{"_$name"};
 
     my $s;
     if ($self->verbose && $self->verbose >= 2) {
@@ -1886,7 +1903,8 @@ sub pack_dict_item {
     #return undef if defined $v && defined $default && "$v" eq "$default";
 
     if ($operand == T_SID) {
-        my $v = $_v // $self->toSID($v);
+	#my $v = $_v // $self->toSID($v);
+	my $v = $self->toSID($v);
         return undef if defined $default && $v == $default;
         print STDERR "pack $dict_name: $name: $s\n" if $self->verbose && $self->verbose == 2;
         return encode_number($v);
@@ -1904,7 +1922,8 @@ sub pack_dict_item {
         print STDERR "pack $dict_name: $name: $s\n" if $self->verbose && $self->verbose == 2;
 	return join '', encode_array(@$v);
     } elsif ($operand == T_ROS) {
-        my $v = $_v // [map +($self->toSID($_->[0]), $self->toSID($_->[1]), $_->[2]), $v ];
+        #my $v = $_v // [map +($self->toSID($_->[0]), $self->toSID($_->[1]), $_->[2]), $v ];
+        my $v = [ map +($self->toSID($_->[0]), $self->toSID($_->[1]), $_->[2]), $v ];
         return undef if cmp_array($v, $default) == 0;
         print STDERR "pack $dict_name: $name: $s\n" if $self->verbose && $self->verbose == 2;
 	return join '', encode_array(@$v);
@@ -1943,10 +1962,30 @@ sub toString {
     return undef unless defined(my $sid = shift);
     my $nStandardStrings = @{$self->StandardStrings};
     return $self->StandardStrings->[$sid] if $sid < $nStandardStrings;
-    $self->{String} //= $self->String_INDEX;
     my $i = $sid - $nStandardStrings;
-    return undef if $i >= $self->{String}->count;
-    return $self->{String}->data($i);
+    return undef if $i >= $self->String_INDEX->count;
+    return $self->String_INDEX->data($i);
+}
+
+
+sub toSID {
+    my $self = shift;
+    my $string = shift;
+    my $nStandardStrings = @{$self->StandardStrings};
+    unless ($self->{String}) {
+	for (0 .. $nStandardStrings - 1) {
+	    $self->{String}{$self->StandardStrings->[$_]} = $_;
+	}
+	for (0 .. $self->String_INDEX->count - 1) {
+	    $self->{String}{$self->String_INDEX->data($_)} = $_ + $nStandardStrings;
+	}
+    }
+    my $sid = $self->{String}{$string};
+    unless (defined $sid) {
+	my $i = $self->String_INDEX->add($string);
+	$sid = $self->{String}{$string} = $i + $nStandardStrings;
+    }
+    $sid;
 }
 
 
@@ -3324,6 +3363,11 @@ sub data {
     if (@_) {
 	my $i = shift;  # $i = 0: indicates the first element.
 	if ($i >= 0 && $i <= $self->count - 1) {
+	    if ($i >= (my $n = $#{$self->{offset}})) {
+		if ((my $j = $i - $n) < @{$self->stage}) {
+		    return $self->stage->[$j];
+		}
+	    }
 	    my $j0 = $self->{offset}->[$i];
 	    my $j1 = $self->{offset}->[$i + 1];
 	    confess "Perhaps \"out of range\" subscripts are used " .
