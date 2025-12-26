@@ -4,6 +4,23 @@ package Font::TTF::CFF_;
 
 Font::TTF::CFF_ - Compact Font Format
 
+=head1 SYNOPSYS
+
+looks various tables in the cff.
+
+ $topdict = $font->{'CFF '}->TopDICT;
+
+creates subset font object with only the glyphs in @cid,
+and gets the font stream.
+
+ $subset = $font->{'CFF '}->subset(@cid);
+ $font_stream = $subset->as_string;
+
+dumps xml similar to "ttx -t CFF subset-font"
+
+ my $d = Font::TTF::CFF_::Dumper->new;
+ $d->dump_xml($subset);
+
 =head1 DESCRIPTION
 
 =cut
@@ -115,12 +132,16 @@ use constant {
 };
 
 
-use Class::Tiny qw(verbose debug gid_as_cid notdef_glyph padding maxpadding);
+use Class::Tiny qw(verbose debug gid_as_cid notdef_glyph padding maxpadding packing);
+use Class::Tiny qw(disasm_print_enabled);
 
 sub new {
     my $proto = shift;
     my $class = ref($proto) || $proto;
-    $class->SUPER::new(gid_as_cid => 1, notdef_glyph => 0, padding => 8, @_);
+    my $self = $class->SUPER::new(@_);
+    $self->gid_as_cid(1);
+    $self->notdef_glyph(0);
+    $self;
 }
 
 
@@ -143,12 +164,14 @@ sub subset {
 
     # setup an empty cff font to store the subset font.
     my $tmp = tempfile(CLEANUP => 1, SUFFIX => '.cff');
-    #my $cff = Font::TTF::CFF_->new(INFILE => $tmp, OFFSET => 0);
     my $cff = $self->new(INFILE => $tmp, OFFSET => 0);
     $cff->$_($self->$_) for qw/debug verbose padding maxpadding/;
 
-    $self->gid(sort { $a <=> $b } grep $_ > 0, $self->gid(@_)) if @_;
-    $self->gid(1 .. $self->nGlyphs - 1) unless $self->gid;
+    if (@_) {
+	$self->gid(@_);
+    } elsif (!$self->gid) {
+	$self->gid(1 .. $self->nGlyphs - 1);
+    }
 
     # The first 5 data of the cff font, the data occupying fixed
     # positions, are clones of the original font.
@@ -166,7 +189,6 @@ sub subset {
     # $cff->padding(8) unless $cff->padding;
     $cff->String_INDEX(Font::TTF::CFF_::INDEX->new);
     $cff->padding(8 + $self->String_INDEX->offset->[-1]) unless $cff->padding;
-    $cff->maxpadding(16) unless $cff->maxpadding;
 
     # Prevents FDArray() from calling get_FDArray().
     $cff->FDArray([]);
@@ -268,39 +290,36 @@ sub subset {
     $cff->gid(1 .. $new_gid - 1);
 
     $cff->GlobalSubr_INDEX->commit;
-    if ($self->debug) {
-	$cff->GlobalSubr_INDEX->remap('hintmask', 'GlobalSubr_INDEX');
-    }
-
+    $cff->GlobalSubr_INDEX->remap('hintmask', 'GlobalSubr_INDEX');
     if ($cff->TopDICT->{ROS}) {
 	for my $fdindex (keys %fdindex2fdindex) {
 	    my $new_fdindex = $fdindex2fdindex{$fdindex};
 	    $cff->FontDICT($new_fdindex);
 	    $cff->LocalSubr_INDEX->commit;
-	    if ($self->debug) {
-		$cff->LocalSubr_INDEX->remap('hintmask', 'LocalSubr_INDEX');
-	    }
+	    $cff->LocalSubr_INDEX->remap('hintmask', 'LocalSubr_INDEX');
 	}
     } else {
 	$cff->LocalSubr_INDEX->commit;
-	if ($self->debug) {
-	    $cff->LocalSubr_INDEX->remap('hintmask', 'LocalSubr_INDEX');
-	}
+	$cff->LocalSubr_INDEX->remap('hintmask', 'LocalSubr_INDEX');
     }
     $cff->CharStrings_INDEX->commit;
-
-    if ($self->debug) {
-	$cff->CharStrings_INDEX->remap('hintmask', 'CharStrings_INDEX');
-    }
+    $cff->CharStrings_INDEX->remap('hintmask', 'CharStrings_INDEX');
 
     $cff->{FDSelect}{gid2fdindex} = \@gid2fdindex;
     $cff->nGlyphs($cff->CharStrings_INDEX->count);
 
     my ($p1end, $p2end, $last_p1end);
 
+    $self->packing(0);
+
   p1:
     # Outputs the first five data (data occupying fixed positions)
     # in the cff font.
+
+    $self->packing($self->packing + 1);
+    $cff->maxpadding($cff->padding + 8)
+	if !defined $cff->maxpadding || $cff->maxpadding <= $cff->padding;
+
     $tmp->seek(0, 0);
     $tmp->print($cff->pack_Header);
     $tmp->print($cff->pack_INDEX($cff->Name_INDEX));
@@ -393,15 +412,18 @@ sub subset {
     $tmp->print($cff->pack_INDEX($cff->GlobalSubr_INDEX));
     my $p1end_updated = $tmp->tell;
     if ($p1end_updated > $p2start) {
-	warn $cff->Name_INDEX->data(0), ": p1 overlaps p2. ",
-	    "(p1 $p1end_updated, p2 $p2start)\n";
+	warn $cff->Name_INDEX->data(0), ": p1 overlaps p2 ",
+	    "(p1 $p1end_updated, p2 $p2start, padding ", $cff->padding, ")\n",
+	    "redo packing...\n" if $self->verbose;
 	$cff->padding(8);
 	goto p1;
     }
     if ($p2start - $p1end_updated > $cff->maxpadding) {
 	warn $cff->Name_INDEX->data(0), ": gap between p1 and p2: ",
-	    $p2start - $p1end_updated, "\n" if $self->verbose;
+	    $p2start - $p1end_updated, "\n",
+	    "redo packing...\n" if $self->verbose;
 	$cff->padding(8);
+	$cff->maxpadding(0);	# auto fit
 	goto p1;
     }
     $tmp->truncate($p2end);
@@ -450,9 +472,14 @@ sub gid {
     my $self = shift;
     if (@_) {
 	if (ref $_[0] eq 'ARRAY') {
-	    $self->{gid} = shift;
+	    $self->gid(@{$_[0]} > 0? @$_[0] : undef);
 	} else {
-	    $self->{gid} = \@_;
+	    my %seen;
+	    if (my @gid = grep defined && $_ > 0 && !$seen{$_}++, @_) {
+		$self->{gid} = \@gid;
+	    } else {
+		$self->{gid} = undef;
+	    }
 	}
     }
     if (wantarray) {
@@ -959,6 +986,7 @@ sub disasm {
             elsif ($c == 14) {
 		$self->disasm_print("endchar");
 		# – endchar (14) |–
+		$self->{w} = pop @{$self->{v}} unless defined $self->{w};
 		#my $advance = $self->PrivateDICT->{defaultWidthX};
 		#if (defined $self->{w}) {
 		#    $advance = $self->PrivateDICT->{nominalWidthX};
@@ -1137,8 +1165,8 @@ sub idiv {
 
 sub disasm_print {
     my $self = shift;
+    return unless $self->disasm_print_enabled;
     our $DISASM;
-    return unless $self->debug;
     for (@_) {
 	$DISASM = [] if !defined $DISASM;
 	push @{$DISASM}, [] if !defined $DISASM->[-1] || /\n/;
@@ -2540,7 +2568,7 @@ sub cmp_array {
     return +1 if  defined $a && !defined $b;
     return -1 if !defined $a &&  defined $b;
 
-    croak Dumper({ cmp_array => { a => $a, b => $b } }) unless
+    confess Dumper({ cmp_array => { a => $a, b => $b } }) unless
         defined $a && ref $a eq 'ARRAY' &&
         defined $b && ref $b eq 'ARRAY';
     my @a = @$a;
@@ -3430,7 +3458,7 @@ sub offSize {
 }
 
 
-package Font::TTF::CFF_::Debug;
+package Font::TTF::CFF_::Dumper;
 
 use strict;
 use warnings;
@@ -3446,6 +3474,9 @@ sub new {
 sub dump_xml {
     my $self = shift;
     my $cff = shift;
+
+    my $disasm = $cff->disasm_print_enabled;
+    $cff->disasm_print_enabled(1);
 
     $self->p(qq<?xml version="1.0" encoding="UTF-8"?>);
     $self->p(qq<font_ttf>);
@@ -3521,6 +3552,8 @@ sub dump_xml {
     $self->p(qq</CFF>);
     $self->_p;
     $self->p(qq</font_ttf>);
+
+    $cff->disasm_print_enabled($disasm);
 }
 
 
