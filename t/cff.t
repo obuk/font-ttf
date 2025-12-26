@@ -2,15 +2,19 @@
 
 use strict;
 use warnings;
-use Test::More;
 use Font::TTF::Font;
 use Font::TTF::Ttc;
 use IO::String;
 
-my ($font) = grep -f, (
-    #"../HaranoAjiFonts/HaranoAjiMincho-Regular.otf",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", # apt-get install fonts-noto
-);
+my $font;
+BEGIN {
+    ($font) = grep -f, (
+        "../HaranoAjiFonts/HaranoAjiMincho-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", # apt-get install fonts-noto
+    );
+}
+
+use Test::More $font ? () : (skip_all => "Cannot find font");
 
 my $f = $font =~ /\.ttc$/?
     Font::TTF::Ttc->open($font)->{directs}[0] :
